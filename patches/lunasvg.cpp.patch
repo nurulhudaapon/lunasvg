@@ -1,0 +1,22 @@
+diff --git a/source/lunasvg.cpp b/source/lunasvg.cpp
+--- a/source/lunasvg.cpp
++++ b/source/lunasvg.cpp
+@@ -418,6 +418,10 @@
+ 
+ std::unique_ptr<Document> Document::loadFromFile(const std::string& filename)
+ {
++#ifdef LUNASVG_DISABLE_FILESYSTEM
++    (void)filename;
++    return nullptr;
++#else
+     std::ifstream fs;
+     fs.open(filename);
+     if(!fs.is_open())
+@@ -426,6 +430,7 @@
+     std::getline(fs, content, '\0');
+     fs.close();
+     return loadFromData(content);
++#endif
+ }
+ 
+ std::unique_ptr<Document> Document::loadFromData(const std::string& string)

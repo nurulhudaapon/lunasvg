@@ -1,0 +1,74 @@
+diff --git a/plutovg/source/plutovg-ft-raster.c b/plutovg/source/plutovg-ft-raster.c
+--- a/plutovg/source/plutovg-ft-raster.c
++++ b/plutovg/source/plutovg-ft-raster.c
+@@ -58,11 +58,20 @@
+ #include "plutovg-ft-raster.h"
+ #include "plutovg-ft-math.h"
+ 
++/*
++ * WASI has no usable setjmp/longjmp without Wasm EH. The FreeType gray
++ * rasterizer only uses longjmp to abort a band on cell-pool overflow; we
++ * emulate that with a flag + NULL returns so band splitting can recover.
++ */
++#ifdef __wasi__
++#define pvg_ft_jmp_buf  volatile int
++#else
+ #include <setjmp.h>
+ 
+ #define pvg_ft_setjmp   setjmp
+ #define pvg_ft_longjmp  longjmp
+ #define pvg_ft_jmp_buf  jmp_buf
++#endif
+ 
+ #include <stddef.h>
+ 
+@@ -291,7 +300,14 @@
+     }
+ 
+     if ( ras.num_cells >= ras.max_cells )
++    {
++#ifdef __wasi__
++      ras.jump_buffer = 1;
++      return NULL;
++#else
+       pvg_ft_longjmp( ras.jump_buffer, 1 );
++#endif
++    }
+ 
+     cell        = ras.cells + ras.num_cells++;
+     cell->x     = x;
+@@ -312,7 +328,10 @@
+     if ( ras.area | ras.cover )
+     {
+       PCell  cell = gray_find_cell( RAS_VAR );
+-
++#ifdef __wasi__
++      if ( cell == NULL )
++        return;
++#endif
+ 
+       cell->area  += ras.area;
+       cell->cover += ras.cover;
+@@ -1632,6 +1651,14 @@
+   {
+     volatile int  error = 0;
+ 
++#ifdef __wasi__
++    ras.jump_buffer = 0;
++    error = PVG_FT_Outline_Decompose( &ras.outline, &ras );
++    if ( ras.jump_buffer )
++      error = ErrRaster_Memory_Overflow;
++    else if ( !ras.invalid )
++      gray_record_cell( RAS_VAR );
++#else
+     if ( pvg_ft_setjmp( ras.jump_buffer ) == 0 )
+     {
+       error = PVG_FT_Outline_Decompose( &ras.outline, &ras );
+@@ -1642,6 +1669,7 @@
+     {
+       error = ErrRaster_Memory_Overflow;
+     }
++#endif
+ 
+     return error;
+   }

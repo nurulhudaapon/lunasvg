@@ -2,16 +2,18 @@
     .name = .lunasvg,
     .fingerprint = 0xd309c0552e3061f6,
     .version = "0.0.0",
-    .minimum_zig_version = "0.17.0-dev.956+2dca73595",
+    .minimum_zig_version = "0.17.0-dev.2320+1e770dbef",
     .dependencies = .{
         .lunasvg = .{
-            .url = "git+https://github.com/sammycage/lunasvg.git#2872affa1027cad92a05408a7e6f2547efa7f364",
-            .hash = "N-V-__8AAPf4FAApZDCyZsSSVDLi0Iji6HCPNrneMqNkb44h",
+            .url = "git+https://github.com/sammycage/lunasvg.git#cf3594d5232e075fb344365191f0ecadd1519e1e",
+            .hash = "N-V-__8AAHT7FAAv4TrFIw-t1UXhp6IYksuvWyXfK6OovZ4n",
         },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "test",
+        "patches",
     },
 }

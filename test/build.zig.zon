@@ -1,0 +1,15 @@
+.{
+    .name = .lunasvg_example,
+    .version = "0.0.0",
+    .fingerprint = 0x22254c8ab715e416,
+    .dependencies = .{
+        .lunasvg = .{
+            .path = "../",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
