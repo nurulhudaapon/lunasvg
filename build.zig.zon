@@ -2,11 +2,12 @@
     .name = .lunasvg,
     .fingerprint = 0xd309c0552e3061f6,
     .version = "0.0.0",
-    .minimum_zig_version = "0.17.0-dev.2320+1e770dbef",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .lunasvg = .{
             .url = "git+https://github.com/sammycage/lunasvg.git#cf3594d5232e075fb344365191f0ecadd1519e1e",
             .hash = "N-V-__8AAHT7FAAv4TrFIw-t1UXhp6IYksuvWyXfK6OovZ4n",
+            .lazy = true,
         },
     },
     .paths = .{
@@ -15,5 +16,6 @@
         "src",
         "test",
         "patches",
+        "vendor",
     },
 }

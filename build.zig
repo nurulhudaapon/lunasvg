@@ -1,17 +1,27 @@
 const std = @import("std");
 
+const vendor_root = "vendor";
+
 pub fn build(b: *std.Build) !void {
+    // Internal flag used by `zig build vendor` so the lazy upstream dep is only
+    // fetched for that step, not for ordinary builds.
+    const do_vendor = b.option(bool, "do-vendor", "Internal: sync upstream into vendor/") orelse false;
+    if (do_vendor) {
+        syncVendor(b);
+        return;
+    }
+
+    addVendorStep(b);
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const lunasvg_dep = b.dependency("lunasvg", .{});
-    const lunasvg_root = lunasvg_dep.path(".");
-    const patched = applyWasiPatch(b, lunasvg_dep);
+    const lunasvg_root = b.path(vendor_root);
     const is_wasi = target.result.cpu.arch.isWasm() and target.result.os.tag == .wasi;
 
-    const static_lib = addLunasvg(b, target, optimize, .static, patched);
+    const static_lib = addLunasvg(b, target, optimize, .static, lunasvg_root);
     if (!is_wasi) {
-        _ = addLunasvg(b, target, optimize, .shared, patched);
+        _ = addLunasvg(b, target, optimize, .shared, lunasvg_root);
     }
 
     const translated = b.addTranslateC(.{
@@ -78,7 +88,7 @@ pub fn build(b: *std.Build) !void {
             .name = "svg2png",
             .root_module = mod,
         });
-        mod.addIncludePath(lunasvg_dep.path("include"));
+        mod.addIncludePath(lunasvg_root.path(b, "include"));
         mod.addCSourceFiles(.{
             .root = lunasvg_root,
             .files = &.{"examples/svg2png.cpp"},
@@ -95,48 +105,59 @@ pub fn build(b: *std.Build) !void {
     }
 }
 
-fn applyWasiPatch(b: *std.Build, lunasvg_dep: *std.Build.Dependency) std.Build.LazyPath {
-    const patched = b.addWriteFiles();
-    _ = patched.addCopyFile(
-        patchFile(b, lunasvg_dep.path("source/lunasvg.cpp"), b.path("patches/lunasvg.cpp.patch"), "lunasvg.cpp"),
-        "source/lunasvg.cpp",
-    );
-    _ = patched.addCopyFile(
-        patchFile(
-            b,
-            lunasvg_dep.path("plutovg/source/plutovg-ft-raster.c"),
-            b.path("patches/plutovg-ft-raster.c.patch"),
-            "plutovg-ft-raster.c",
-        ),
-        "plutovg/source/plutovg-ft-raster.c",
-    );
-    return patched.getDirectory();
+/// Public step: `zig build vendor` shells into a -Ddo-vendor build so the lazy
+/// upstream package is fetched only for vendoring. Uses `-p .` so installDirectory
+/// writes into `./vendor` instead of `zig-out/vendor`.
+fn addVendorStep(b: *std.Build) void {
+    const vendor_step = b.step("vendor", "Sync and patch upstream lunasvg into vendor/");
+    const cmd = b.addSystemCommand(&.{
+        b.graph.zig_exe,
+        "build",
+        "-Ddo-vendor=true",
+        "-p",
+        ".",
+    });
+    cmd.setCwd(b.path("."));
+    cmd.has_side_effects = true;
+    vendor_step.dependOn(&cmd.step);
 }
 
-fn patchFile(
-    b: *std.Build,
-    input: std.Build.LazyPath,
-    patch_path: std.Build.LazyPath,
-    out_name: []const u8,
-) std.Build.LazyPath {
-    const patch = b.addSystemCommand(&.{ "patch", "-p1", "-s", "--batch" });
-    patch.setName(b.fmt("patch {s}", .{out_name}));
-    patch.rename_step_with_output_arg = false;
-    patch.addPrefixedFileArg("-i", patch_path);
-    patch.addArg("-o");
-    const out = patch.addOutputFileArg(out_name);
-    patch.addFileArg(input);
-    return out;
+/// Fetch lazy upstream, installDirectory into vendor/, then apply .patch files in place.
+fn syncVendor(b: *std.Build) void {
+    const dep = b.lazyDependency("lunasvg", .{}) orelse return;
+
+    const install = b.addInstallDirectory(.{
+        .source_dir = dep.path("."),
+        .install_dir = .prefix,
+        .install_subdir = vendor_root,
+    });
+    b.getInstallStep().dependOn(&install.step);
+
+    // Apply patches after install (requires `patch`; only needed for this one-off vendor step).
+    var prev: *std.Build.Step = &install.step;
+    for (vendor_patches) |patch_file| {
+        const patch = b.addSystemCommand(&.{ "patch", "-p1", "--forward", "--batch", "-i" });
+        patch.setName(b.fmt("patch {s}", .{patch_file}));
+        patch.addFileArg(b.path(patch_file));
+        patch.setCwd(b.path(vendor_root));
+        patch.step.dependOn(prev);
+        b.getInstallStep().dependOn(&patch.step);
+        prev = &patch.step;
+    }
 }
+
+const vendor_patches = [_][]const u8{
+    "patches/lunasvg.cpp.patch",
+    "patches/plutovg-ft-raster.c.patch",
+};
 
 pub fn addLunasvg(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     kind: enum { static, shared },
-    patched: std.Build.LazyPath,
+    lunasvg_root: std.Build.LazyPath,
 ) *std.Build.Step.Compile {
-    const lunasvg_dep = b.dependency("lunasvg", .{});
     const is_wasi = target.result.cpu.arch.isWasm() and target.result.os.tag == .wasi;
     const cpp_flags = if (is_wasi)
         &[_][]const u8{ "-std=c++17", "-fno-exceptions" }
@@ -161,10 +182,10 @@ pub fn addLunasvg(
         }),
     };
 
-    mod.addIncludePath(lunasvg_dep.path("include"));
-    mod.addIncludePath(lunasvg_dep.path("source"));
-    mod.addIncludePath(lunasvg_dep.path("plutovg/include"));
-    mod.addIncludePath(lunasvg_dep.path("plutovg/source"));
+    mod.addIncludePath(lunasvg_root.path(b, "include"));
+    mod.addIncludePath(lunasvg_root.path(b, "source"));
+    mod.addIncludePath(lunasvg_root.path(b, "plutovg/include"));
+    mod.addIncludePath(lunasvg_root.path(b, "plutovg/source"));
     mod.addIncludePath(b.path("src"));
     mod.addCMacro("PLUTOVG_BUILD", "");
     mod.addCMacro("PATH_MAX", "4096");
@@ -181,7 +202,7 @@ pub fn addLunasvg(
             mod.addCMacro("LUNASVG_BUILD_STATIC", "");
             mod.addCMacro("PLUTOVG_BUILD_STATIC", "");
             lib.installHeader(
-                lunasvg_dep.path("include/lunasvg.h"),
+                lunasvg_root.path(b, "include/lunasvg.h"),
                 "lunasvg-unconfigured.h",
             );
             const w = b.addWriteFiles();
@@ -196,23 +217,14 @@ pub fn addLunasvg(
         },
     }
 
-    // Upstream sources except the two files we compile from the patched tree.
     mod.addCSourceFiles(.{
-        .root = lunasvg_dep.path("."),
-        .files = &lunasvg_cpp_files_unpatched,
+        .root = lunasvg_root,
+        .files = &lunasvg_cpp_files,
         .flags = cpp_flags,
     });
     mod.addCSourceFiles(.{
-        .root = lunasvg_dep.path("."),
-        .files = &plutovg_c_files_unpatched,
-        .flags = &.{"-std=c11"},
-    });
-    mod.addCSourceFile(.{
-        .file = patched.path(b, "source/lunasvg.cpp"),
-        .flags = cpp_flags,
-    });
-    mod.addCSourceFile(.{
-        .file = patched.path(b, "plutovg/source/plutovg-ft-raster.c"),
+        .root = lunasvg_root,
+        .files = &plutovg_c_files,
         .flags = &.{"-std=c11"},
     });
     mod.addCSourceFiles(.{
@@ -224,7 +236,8 @@ pub fn addLunasvg(
     return lib;
 }
 
-const lunasvg_cpp_files_unpatched = [_][]const u8{
+const lunasvg_cpp_files = [_][]const u8{
+    "source/lunasvg.cpp",
     "source/graphics.cpp",
     "source/svgelement.cpp",
     "source/svggeometryelement.cpp",
@@ -236,7 +249,7 @@ const lunasvg_cpp_files_unpatched = [_][]const u8{
     "source/svgtextelement.cpp",
 };
 
-const plutovg_c_files_unpatched = [_][]const u8{
+const plutovg_c_files = [_][]const u8{
     "plutovg/source/plutovg-blend.c",
     "plutovg/source/plutovg-canvas.c",
     "plutovg/source/plutovg-font.c",
@@ -246,5 +259,6 @@ const plutovg_c_files_unpatched = [_][]const u8{
     "plutovg/source/plutovg-rasterize.c",
     "plutovg/source/plutovg-surface.c",
     "plutovg/source/plutovg-ft-math.c",
+    "plutovg/source/plutovg-ft-raster.c",
     "plutovg/source/plutovg-ft-stroker.c",
 };
